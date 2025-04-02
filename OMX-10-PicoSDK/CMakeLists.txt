@@ -52,20 +52,28 @@ pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_usb(${PROJECT_NAME} 0)
-pico_enable_stdio_uart(${PROJECT_NAME} 1)
+pico_enable_stdio_usb(${PROJECT_NAME} 1)
+pico_enable_stdio_uart(${PROJECT_NAME} 0)
+
+# Add Debounce
+set(PICO_DEBOUNCE_PATH "include/PicoDebounceButton")
+add_subdirectory(${PICO_DEBOUNCE_PATH})
 
 # Add the standard library to the build
 target_link_libraries(${PROJECT_NAME}
         pico_stdlib
+        # pico_standard_link
         hardware_pio
         hardware_i2c
         hardware_sync
         hardware_dma
+        hardware_uart
         hardware_flash
+        hardware_timer
         pico_multicore
         tinyusb_board 
         tinyusb_device 
+        PicoDebounceButton::PicoDebounceButton
         )
 
 # Add the standard include files to the build

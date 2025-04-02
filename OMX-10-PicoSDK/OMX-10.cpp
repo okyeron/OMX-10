@@ -1,15 +1,20 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
+#include "pico.h"
 #include "hardware/pio.h"
 #include "hardware/gpio.h"
+#include "hardware/i2c.h"
 #include "pico/binary_info.h"
 #include "hardware/clocks.h"
+#include "hardware/timer.h"
+#include "hardware/uart.h"
 #include "ws2812.pio.h"
 
 #include "bsp/board.h"
 #include "tusb.h"
+#include "include/leds.h"
+#include "include/PicoDebounceButton/PicoDebounceButton.hpp"
 
 static const int I2C_BAUDRATE = 100000; // 100 kHz
 
@@ -20,28 +25,58 @@ static const int I2C_BAUDRATE = 100000; // 100 kHz
 #define BUTTON_PIN1 27
 #define BUTTON_PIN2 28
 
-const int LED_COUNT = 10;
-const int LED_PIN = 24;
-const int LED_BRIGHTNESS = 90;
+#define UART_ID uart0
+#define UART_BAUD 31250
 
-const uint8_t I2C_SDA = 2;
-const uint8_t I2C_SCL = 3;
-const uint8_t TXLED = 0;
-const uint8_t RXLED = 1;
-const int REDLED = 16;		// RED LED
-const int BLUELED = 18;		// BLUE LED
-const int NEOPIXPIN = 24;
-const int POWERENABLE = 21;
-const int NEOPWR = 17;
+#define I2C_SDA 2
+#define I2C_SCL 3
+#define TXLED 0
+#define RXLED 1
+#define REDLED 16		// RED LED
+#define POWERENABLE 21
+#define NEOPWR 17
+#define NEOPIXELPIN NEOPIXPIN
 
+// Button Pins and Layout
 int Rows[ROWS] = {12, 11, 10, 9, 8};
 int Cols[COLS]= {7, 6};
-
 char keys[COLS][ROWS] = {
 	{0, 1, 2, 3, 4},
 	{5, 6, 7, 8, 9}
-	};
+};
 
+// GPIO Buttons
+auto debounceButtonOne =
+    picodebounce::PicoDebounceButton(BUTTON_PIN1, 10, picodebounce::PicoDebounceButton::PRESSED, false);
+auto debounceButtonTwo =
+    picodebounce::PicoDebounceButton(BUTTON_PIN2, 10, picodebounce::PicoDebounceButton::PRESSED, false);
+
+    void buttonReadTask() {
+  // Read the button states
+  auto ButtonOneReadState = debounceButtonOne.update();
+  auto ButtonTwoReadState = debounceButtonTwo.update();
+  // If the button state has changed
+  if (ButtonOneReadState) {
+    // If the button is pressed
+    if (debounceButtonOne.getPressed()) {
+        gpio_put(REDLED, true);
+        ClearLeds();
+    } else {
+        gpio_put(REDLED, false);
+    }
+  }
+  if (ButtonTwoReadState) {
+    // If the button is pressed
+    if (debounceButtonTwo.getPressed()) {
+        gpio_put(REDLED, true);
+        ClearLeds();
+    } else {
+        gpio_put(REDLED, false);
+    }
+  }
+}
+
+// Matrix Button/Switches
 #define DEBOUNCE 3
 
 enum{
@@ -53,7 +88,6 @@ enum{
 };
 
 class ButtonState
-
 {
     public:
 
@@ -79,13 +113,26 @@ class ButtonState
                 msg[0] = 0x90;                    // Note On - Channel 1
                 msg[1] = 60+ID; // Note Number
                 msg[2] = 127;                     // Velocity
+                ledcolors[ID]=urgb_u32(20,20,20);
+
+                // USBMIDI
                 tud_midi_n_stream_write(0, 0, msg, 3);
+                // HWMIDI
+                // uart_putc_raw(UART_ID, msg);// HOW TO FORMAT THE BYTES?
+                uart_write_blocking(UART_ID, msg, 3);
             }
-            else
+            else if (state == BUTTON_UP)
             {
                 // do something on button up
                 printf("released button %d!\n", ID);
-
+                msg[0] = 0x90;                    // Note On - Channel 1
+                msg[1] = 60+ID; // Note Number
+                msg[2] = 0;                     // Velocity
+                ledcolors[ID]=urgb_u32(20,0,0);
+                // USBMIDI
+                tud_midi_n_stream_write(0, 0, msg, 3);
+                // HWMIDI
+                uart_write_blocking(UART_ID, msg, 3);
             }
         }
     }
@@ -132,32 +179,21 @@ void SetIn(int p, bool pullup)
         gpio_pull_up(p);
 }
 
-PIO LED_pio = pio0;
-uint LED_sm = 0;
-#define IS_RGBW false
-
-void LED_init()
-{
-    int ledoff = pio_add_program(LED_pio, &ws2812_program);
-    ws2812_program_init(LED_pio, LED_sm, ledoff, NEOPIXPIN, 800000, false);
-
-}
-
 void SetupBoard(){
 
     SetOut(REDLED);                 // RED LED
 	gpio_put(REDLED, 1);            // indicate board is on
 
-	SetOut(POWERENABLE);		        // 5v enable Pin
+	SetOut(POWERENABLE);		        // 5v enable Pin (for MIDI)
 	gpio_put(POWERENABLE, 1);	        // Turn 5v enable ON
 
 	SetOut(NEOPWR); 		        // Neopixel power enable Pin
 	gpio_put(NEOPWR, 1);	        // Neopixel power ON
 	
-    SetOut(NEOPWR);                 // UART TX
-    gpio_put(NEOPWR, 1);
+    SetOut(TXLED);                 // UART TX
+    gpio_put(TXLED, 1);
 
-    SetOut(NEOPIXPIN);
+    SetOut(NEOPIXELPIN);
 
       // BUTTONS
     SetIn(BUTTON_PIN1, true);
@@ -172,8 +208,7 @@ void SetupBoard(){
     gpio_pull_up(I2C_SCL);
     i2c_init(i2c1, I2C_BAUDRATE);
 
-    
-    uart_init(uart0, 31250); // HARDWARE MIDI  UART
+    uart_init(UART_ID, UART_BAUD); // HARDWARE MIDI UART
     // Set the TX and RX for HARDWARE MIDI
     gpio_set_function(TXLED, GPIO_FUNC_UART);
     gpio_set_function(RXLED, GPIO_FUNC_UART);
@@ -207,14 +242,22 @@ int main()
     
     SetupBoard();
     tusb_init();
+    
+    rainbow(5);
+    ClearLeds();
 
-
+    uint32_t now=0 ;
+    uint32_t lastLedUpdate=0;
+    uint32_t ledUpdateInterval=10000;
     int CurrentCol = 0;
     while (true) {
+       
         tud_task(); // tinyusb device task
         // led_blinking_task();
         midi_task();
     
+        //GPIO buttons
+        buttonReadTask();
         
         for(int c =0;c<COLS;c++)
         {
@@ -237,6 +280,13 @@ int main()
             AllButtons[r][CurrentCol].Update(gpio_get(Rows[r]));
         }
 
+        now = time_us_32();  
+        if((now-lastLedUpdate)>ledUpdateInterval)
+        {
+            lastLedUpdate=now;
+            SendLeds();
+        }
+       
         CurrentCol = (CurrentCol  + 1)%COLS;
     }
 }
